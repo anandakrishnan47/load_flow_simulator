@@ -7,3 +7,4 @@ pytest
 pandas
 openpyxl
 reportlab
+pytest-qt
