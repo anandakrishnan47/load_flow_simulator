@@ -1,0 +1,9 @@
+
+numpy
+scipy
+PySide6
+matplotlib
+pytest
+pandas
+openpyxl
+reportlab
