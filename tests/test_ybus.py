@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 from scipy.sparse import csr_matrix
 
+
 from loadflow.models import (
     Network, Bus, Line, Transformer, Shunt
 )

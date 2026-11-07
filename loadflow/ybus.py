@@ -1,6 +1,7 @@
 
 """Module 2: Sparse bus admittance matrix."""
 
+
 import numpy as np
 from scipy.sparse import coo_matrix
 
