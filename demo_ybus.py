@@ -1,20 +1,20 @@
 
 from main import create_sample_network
-from loadflow.ybus import build_ybus, print_ybus
+from loadflow.ybus import build_ybus
 
 
 def main():
-    network = create_sample_network()
+    net = create_sample_network()
 
-    ybus, bus_index = build_ybus(network)
+    ybus, bus_index = build_ybus(net)
 
-    print("E4234 Load Flow Simulator")
-    print("Module 2: Ybus Matrix Formation")
+    print("Ybus Matrix (pu)")
+    print("----------------")
 
-    print_ybus(ybus, bus_index)
+    for number, index in bus_index.items():
+        print(f"Bus {number}: index {index}")
 
-    print("\nMatrix shape:", ybus.shape)
-    print("Nonzero elements:", ybus.nnz)
+    print("\n", ybus.toarray())
 
 
 if __name__ == "__main__":
