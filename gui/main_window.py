@@ -1,15 +1,16 @@
 
 """
-E4234 APSA Load Flow Simulator
+E4234 Advanced Power System Analysis
+APSA Load Flow Simulator
 
-Modules 9 and 10:
-PySide6 Graphical User Interface
-Interactive Single-Line Diagram Editor
+Module 9  - PySide6 GUI
+Module 10 - Interactive Single-Line Diagram
+Module 11 - Results Visualization and Export
 """
 
 import math
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -41,10 +42,13 @@ from gui.controller import (
 from gui.worker import LoadFlowWorker
 from gui.diagram_editor import DiagramEditor
 
+# Module 11
+from gui.results_charts import ResultsCharts
+from gui.export_dialog import ExportPanel
+
 
 def table_item(value, editable=False):
-    """Create a Qt table item."""
-
+    """Create a table item with optional editing."""
     item = QTableWidgetItem(str(value))
 
     if not editable:
@@ -57,8 +61,7 @@ def table_item(value, editable=False):
 
 
 def configure_table(table, headings):
-    """Configure table headings and appearance."""
-
+    """Configure a Qt result/input table."""
     table.setColumnCount(len(headings))
     table.setHorizontalHeaderLabels(headings)
 
@@ -77,8 +80,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(
             "APSA | Newton-Raphson Load Flow Simulator"
         )
-
-        self.resize(1400, 850)
+        self.resize(1450, 900)
 
         self.network = None
         self.study = None
@@ -87,9 +89,9 @@ class MainWindow(QMainWindow):
         self.build_ui()
         self.load_selected_network()
 
-    # --------------------------------------------------
-    # BUILD MAIN WINDOW
-    # --------------------------------------------------
+    # ==================================================
+    # BUILD USER INTERFACE
+    # ==================================================
 
     def build_ui(self):
 
@@ -98,44 +100,37 @@ class MainWindow(QMainWindow):
 
         root = QVBoxLayout(central)
 
+        # ----------------------------------------------
+        # APPLICATION HEADING
+        # ----------------------------------------------
+
         heading = QLabel(
             "APSA Load Flow Simulator"
         )
         heading.setObjectName("mainHeading")
-
         root.addWidget(heading)
 
         subtitle = QLabel(
             "E4234 Advanced Power System Analysis | "
             "Newton-Raphson AC Power Flow"
         )
-
         root.addWidget(subtitle)
 
         # ----------------------------------------------
         # STUDY CONFIGURATION
         # ----------------------------------------------
 
-        controls = QGroupBox(
-            "Study Configuration"
-        )
-
+        controls = QGroupBox("Study Configuration")
         controls_layout = QGridLayout(controls)
 
         self.network_combo = QComboBox()
-        self.network_combo.addItems(
-            NETWORKS.keys()
-        )
+        self.network_combo.addItems(NETWORKS.keys())
 
-        self.load_button = QPushButton(
-            "Load Network"
-        )
+        self.load_button = QPushButton("Load Network")
 
         self.tolerance_spin = QDoubleSpinBox()
         self.tolerance_spin.setDecimals(10)
-        self.tolerance_spin.setRange(
-            1e-10, 1e-2
-        )
+        self.tolerance_spin.setRange(1e-10, 1e-2)
         self.tolerance_spin.setSingleStep(1e-8)
         self.tolerance_spin.setValue(1e-8)
 
@@ -147,22 +142,15 @@ class MainWindow(QMainWindow):
             "Enforce generator reactive limits"
         )
 
-        self.run_button = QPushButton(
-            "Run Load Flow"
-        )
-
-        self.run_button.setObjectName(
-            "runButton"
-        )
+        self.run_button = QPushButton("Run Load Flow")
+        self.run_button.setObjectName("runButton")
 
         controls_layout.addWidget(
             QLabel("Network:"), 0, 0
         )
-
         controls_layout.addWidget(
             self.network_combo, 0, 1
         )
-
         controls_layout.addWidget(
             self.load_button, 0, 2
         )
@@ -170,7 +158,6 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(
             QLabel("Tolerance (pu):"), 1, 0
         )
-
         controls_layout.addWidget(
             self.tolerance_spin, 1, 1
         )
@@ -178,7 +165,6 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(
             QLabel("Maximum iterations:"), 1, 2
         )
-
         controls_layout.addWidget(
             self.iterations_spin, 1, 3
         )
@@ -186,7 +172,6 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(
             self.q_limits_check, 2, 0, 1, 2
         )
-
         controls_layout.addWidget(
             self.run_button, 2, 2, 1, 2
         )
@@ -194,32 +179,26 @@ class MainWindow(QMainWindow):
         root.addWidget(controls)
 
         # ----------------------------------------------
-        # STATUS
+        # STATUS LABEL
         # ----------------------------------------------
 
         self.status_label = QLabel("Ready")
-        self.status_label.setObjectName(
-            "statusLabel"
-        )
-
+        self.status_label.setObjectName("statusLabel")
         root.addWidget(self.status_label)
 
         # ----------------------------------------------
         # MAIN SPLITTER
         # ----------------------------------------------
 
-        splitter = QSplitter(
-            Qt.Orientation.Horizontal
-        )
+        splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # ----------------------------------------------
-        # LEFT PANEL: LOAD DATA
+        # LEFT PANEL: NETWORK LOAD DATA
         # ----------------------------------------------
 
         input_box = QGroupBox(
-            "Network Data — Editable Loads"
+            "Network Data - Editable Loads"
         )
-
         input_layout = QVBoxLayout(input_box)
 
         self.load_table = QTableWidget()
@@ -234,25 +213,21 @@ class MainWindow(QMainWindow):
             ],
         )
 
-        input_layout.addWidget(
-            self.load_table
-        )
+        input_layout.addWidget(self.load_table)
 
         help_label = QLabel(
             "Edit Pd and Qd, then click Run Load Flow.\n"
             "Bus numbers and types are read-only.\n"
-            "After diagram edits, click Apply Diagram Changes."
+            "After editing the diagram, click "
+            "Apply Diagram Changes."
         )
-
         help_label.setWordWrap(True)
         input_layout.addWidget(help_label)
 
-        # MODULE 10: SYNCHRONIZATION BUTTON
-
+        # Module 10: Apply diagram changes
         self.sync_diagram_button = QPushButton(
             "Apply Diagram Changes"
         )
-
         input_layout.addWidget(
             self.sync_diagram_button
         )
@@ -260,18 +235,25 @@ class MainWindow(QMainWindow):
         splitter.addWidget(input_box)
 
         # ----------------------------------------------
-        # RIGHT PANEL: RESULTS AND DIAGRAM
+        # RIGHT PANEL: TABS
         # ----------------------------------------------
 
         self.tabs = QTabWidget()
 
-        # MODULE 10: SINGLE-LINE DIAGRAM TAB
-
+        # MODULE 10: SINGLE-LINE DIAGRAM
         self.diagram_editor = DiagramEditor()
 
         self.tabs.addTab(
             self.diagram_editor,
             "Single-Line Diagram",
+        )
+
+        # MODULE 11: RESULTS CHARTS
+        self.results_charts = ResultsCharts()
+
+        self.tabs.addTab(
+            self.results_charts,
+            "Charts",
         )
 
         # ----------------------------------------------
@@ -298,7 +280,7 @@ class MainWindow(QMainWindow):
         )
 
         # ----------------------------------------------
-        # BRANCH RESULTS TAB
+        # BRANCH FLOWS TAB
         # ----------------------------------------------
 
         self.branch_table = QTableWidget()
@@ -348,13 +330,16 @@ class MainWindow(QMainWindow):
         )
 
         splitter.addWidget(self.tabs)
+        splitter.setSizes([400, 1000])
 
-        splitter.setSizes([400, 950])
+        root.addWidget(splitter, stretch=1)
 
-        root.addWidget(
-            splitter,
-            stretch=1,
-        )
+        # ----------------------------------------------
+        # MODULE 11: EXPORT PANEL
+        # ----------------------------------------------
+
+        self.export_panel = ExportPanel()
+        root.addWidget(self.export_panel)
 
         # ----------------------------------------------
         # SIGNAL CONNECTIONS
@@ -363,17 +348,15 @@ class MainWindow(QMainWindow):
         self.load_button.clicked.connect(
             self.load_selected_network
         )
-
         self.run_button.clicked.connect(
             self.run_load_flow
         )
-
         self.sync_diagram_button.clicked.connect(
             self.sync_diagram_to_network
         )
 
         # ----------------------------------------------
-        # STYLING
+        # STYLESHEET
         # ----------------------------------------------
 
         self.setStyleSheet("""
@@ -430,9 +413,9 @@ class MainWindow(QMainWindow):
             }
         """)
 
-    # --------------------------------------------------
-    # LOAD SELECTED NETWORK
-    # --------------------------------------------------
+    # ==================================================
+    # LOAD NETWORK
+    # ==================================================
 
     def load_selected_network(self):
 
@@ -445,7 +428,6 @@ class MainWindow(QMainWindow):
             network = load_network(name)
 
         except Exception as exc:
-
             self.status_label.setText(
                 f"Failed to load {name}"
             )
@@ -460,33 +442,26 @@ class MainWindow(QMainWindow):
         self.network = network
         self.study = None
 
-        # MODULE 10: LOAD INTO DIAGRAM
-
-        self.diagram_editor.set_network(
-            network
-        )
+        # Update the single-line diagram.
+        self.diagram_editor.set_network(network)
 
         self.populate_load_table()
         self.clear_results()
 
         self.status_label.setText(
-            f"Loaded {name}: "
-            f"{len(network.buses)} buses"
+            f"Loaded {name}: {len(network.buses)} buses"
         )
 
-    # --------------------------------------------------
-    # MODULE 10: APPLY DIAGRAM CHANGES
-    # --------------------------------------------------
+    # ==================================================
+    # APPLY DIAGRAM CHANGES
+    # ==================================================
 
     def sync_diagram_to_network(self):
 
         if self.worker is not None:
             return
 
-        self.network = (
-            self.diagram_editor.get_network()
-        )
-
+        self.network = self.diagram_editor.get_network()
         self.study = None
 
         self.populate_load_table()
@@ -499,9 +474,9 @@ class MainWindow(QMainWindow):
             "Review loads before solving."
         )
 
-    # --------------------------------------------------
+    # ==================================================
     # POPULATE LOAD TABLE
-    # --------------------------------------------------
+    # ==================================================
 
     def populate_load_table(self):
 
@@ -510,9 +485,7 @@ class MainWindow(QMainWindow):
             if bus.in_service
         ]
 
-        self.load_table.setRowCount(
-            len(buses)
-        )
+        self.load_table.setRowCount(len(buses))
 
         for row, bus in enumerate(buses):
 
@@ -531,38 +504,28 @@ class MainWindow(QMainWindow):
             )
 
             self.load_table.setItem(
-                row,
-                0,
-                table_item(bus.number),
+                row, 0,
+                table_item(bus.number)
             )
 
             self.load_table.setItem(
-                row,
-                1,
-                table_item(bus.bus_type),
+                row, 1,
+                table_item(bus.bus_type)
             )
 
             self.load_table.setItem(
-                row,
-                2,
-                table_item(
-                    f"{pd:.6f}",
-                    True,
-                ),
+                row, 2,
+                table_item(f"{pd:.6f}", True)
             )
 
             self.load_table.setItem(
-                row,
-                3,
-                table_item(
-                    f"{qd:.6f}",
-                    True,
-                ),
+                row, 3,
+                table_item(f"{qd:.6f}", True)
             )
 
-    # --------------------------------------------------
-    # READ EDITED LOAD VALUES
-    # --------------------------------------------------
+    # ==================================================
+    # READ LOAD TABLE
+    # ==================================================
 
     def read_load_table(self):
 
@@ -573,27 +536,21 @@ class MainWindow(QMainWindow):
         ):
 
             number = int(
-                self.load_table.item(
-                    row, 0
-                ).text()
+                self.load_table.item(row, 0).text()
             )
 
             try:
                 pd = float(
-                    self.load_table.item(
-                        row, 2
-                    ).text()
+                    self.load_table.item(row, 2).text()
                 )
 
                 qd = float(
-                    self.load_table.item(
-                        row, 3
-                    ).text()
+                    self.load_table.item(row, 3).text()
                 )
 
             except (ValueError, AttributeError):
                 raise ValueError(
-                    f"Invalid load at table row {row + 1}"
+                    f"Invalid load at row {row + 1}"
                 )
 
             if (
@@ -608,9 +565,9 @@ class MainWindow(QMainWindow):
 
         return values
 
-    # --------------------------------------------------
-    # RUN LOAD FLOW
-    # --------------------------------------------------
+    # ==================================================
+    # RUN NEWTON-RAPHSON LOAD FLOW
+    # ==================================================
 
     def run_load_flow(self):
 
@@ -618,7 +575,6 @@ class MainWindow(QMainWindow):
             return
 
         if self.network is None:
-
             QMessageBox.warning(
                 self,
                 "No Network",
@@ -627,18 +583,14 @@ class MainWindow(QMainWindow):
             return
 
         try:
-
-            # MODULE 10:
-            # Use the latest electrical network
-            # from the diagram editor.
-
+            # Use the electrical network currently
+            # held by the diagram editor.
             edited = update_loads(
                 self.diagram_editor.get_network(),
                 self.read_load_table(),
             )
 
         except Exception as exc:
-
             QMessageBox.warning(
                 self,
                 "Invalid Input",
@@ -647,38 +599,27 @@ class MainWindow(QMainWindow):
             return
 
         self.study = None
-
         self.clear_results()
 
+        # Remove old voltage coloring.
         self.diagram_editor.scene.clear_solution()
 
-        # Disable controls during calculation.
-
+        # Disable editing while solving.
         self.run_button.setEnabled(False)
         self.load_button.setEnabled(False)
         self.network_combo.setEnabled(False)
         self.load_table.setEnabled(False)
-
         self.diagram_editor.setEnabled(False)
-
-        self.sync_diagram_button.setEnabled(
-            False
-        )
+        self.sync_diagram_button.setEnabled(False)
 
         self.status_label.setText(
             "Solving load flow..."
         )
 
-        # Start background solver.
-
         self.worker = LoadFlowWorker(
             edited,
-            tolerance=(
-                self.tolerance_spin.value()
-            ),
-            max_iterations=(
-                self.iterations_spin.value()
-            ),
+            tolerance=self.tolerance_spin.value(),
+            max_iterations=self.iterations_spin.value(),
             enforce_q_limits=(
                 self.q_limits_check.isChecked()
             ),
@@ -688,33 +629,34 @@ class MainWindow(QMainWindow):
         self.worker.completed.connect(
             self.on_completed
         )
-
         self.worker.failed.connect(
             self.on_failed
         )
-
         self.worker.finished.connect(
             self.on_worker_finished
         )
 
         self.worker.start()
 
-    # --------------------------------------------------
-    # SOLVER COMPLETED
-    # --------------------------------------------------
+    # ==================================================
+    # LOAD FLOW COMPLETED
+    # ==================================================
 
     def on_completed(self, study):
 
         self.study = study
 
+        # Existing Module 9 result tables.
         self.populate_results(study)
 
-        # MODULE 10:
-        # Show solved voltage on diagram.
-
+        # Module 10 voltage visualization.
         self.diagram_editor.apply_solution(
             study.solution
         )
+
+        # Module 11 charts and export controls.
+        self.results_charts.set_study(study)
+        self.export_panel.set_study(study)
 
         solution = study.solution
 
@@ -724,11 +666,14 @@ class MainWindow(QMainWindow):
             f"Mismatch: {solution.mismatch:.3e} pu"
         )
 
-    # --------------------------------------------------
-    # SOLVER FAILED
-    # --------------------------------------------------
+    # ==================================================
+    # LOAD FLOW FAILED
+    # ==================================================
 
     def on_failed(self, message):
+
+        self.study = None
+        self.clear_results()
 
         self.status_label.setText(
             "Load flow failed"
@@ -740,9 +685,9 @@ class MainWindow(QMainWindow):
             message,
         )
 
-    # --------------------------------------------------
-    # WORKER FINISHED
-    # --------------------------------------------------
+    # ==================================================
+    # BACKGROUND WORKER FINISHED
+    # ==================================================
 
     def on_worker_finished(self):
 
@@ -753,25 +698,21 @@ class MainWindow(QMainWindow):
         self.network_combo.setEnabled(True)
         self.load_table.setEnabled(True)
 
-        # MODULE 10:
-        # Re-enable diagram controls.
-
         self.diagram_editor.setEnabled(True)
-
-        self.sync_diagram_button.setEnabled(
-            True
-        )
+        self.sync_diagram_button.setEnabled(True)
 
         if worker is not None:
             worker.deleteLater()
 
         self.worker = None
 
-    # --------------------------------------------------
-    # CLEAR RESULTS
-    # --------------------------------------------------
+    # ==================================================
+    # CLEAR OLD RESULTS
+    # ==================================================
 
     def clear_results(self):
+
+        self.study = None
 
         self.bus_table.setRowCount(0)
         self.branch_table.setRowCount(0)
@@ -779,9 +720,14 @@ class MainWindow(QMainWindow):
         self.summary_text.clear()
         self.history_text.clear()
 
-    # --------------------------------------------------
-    # POPULATE RESULTS
-    # --------------------------------------------------
+        # Module 11:
+        # Prevent exporting stale results.
+        self.results_charts.clear_study()
+        self.export_panel.set_study(None)
+
+    # ==================================================
+    # POPULATE RESULT TABLES
+    # ==================================================
 
     def populate_results(self, study):
 
@@ -794,9 +740,7 @@ class MainWindow(QMainWindow):
             if bus.in_service
         ]
 
-        self.bus_table.setRowCount(
-            len(buses)
-        )
+        self.bus_table.setRowCount(len(buses))
 
         final_types = (
             study.q_limits.bus_types
@@ -813,9 +757,7 @@ class MainWindow(QMainWindow):
 
         for row, bus in enumerate(buses):
 
-            i = solution.bus_index[
-                bus.number
-            ]
+            i = solution.bus_index[bus.number]
 
             values = [
                 bus.number,
@@ -831,22 +773,16 @@ class MainWindow(QMainWindow):
             ]
 
             for col, value in enumerate(values):
-
                 self.bus_table.setItem(
-                    row,
-                    col,
-                    table_item(value),
+                    row, col,
+                    table_item(value)
                 )
-
-            # Highlight voltage violations.
 
             if (
                 solution.vm[i] < bus.vmin
                 or solution.vm[i] > bus.vmax
             ):
-
                 for col in range(len(values)):
-
                     self.bus_table.item(
                         row, col
                     ).setBackground(
@@ -878,19 +814,13 @@ class MainWindow(QMainWindow):
             ]
 
             for col, value in enumerate(values):
-
                 self.branch_table.setItem(
-                    row,
-                    col,
-                    table_item(value),
+                    row, col,
+                    table_item(value)
                 )
 
-            # Highlight overloaded branches.
-
             if branch.loading_percent > 100:
-
                 for col in range(len(values)):
-
                     self.branch_table.item(
                         row, col
                     ).setBackground(
@@ -937,7 +867,6 @@ class MainWindow(QMainWindow):
         ]
 
         if study.q_limits is not None:
-
             summary.extend([
                 "",
                 "GENERATOR Q-LIMIT ENFORCEMENT",
@@ -967,14 +896,12 @@ class MainWindow(QMainWindow):
         for index, mismatch in enumerate(
             solution.mismatch_history
         ):
-
             history.append(
                 f"Iteration {index:3d}: "
                 f"{mismatch:.10e} pu"
             )
 
         if study.q_limits is not None:
-
             history.append(
                 "\nHistory shown is for the final "
                 "inner Newton-Raphson solve."
@@ -984,9 +911,9 @@ class MainWindow(QMainWindow):
             "\n".join(history)
         )
 
-    # --------------------------------------------------
-    # CLOSE WINDOW SAFELY
-    # --------------------------------------------------
+    # ==================================================
+    # SAFE WINDOW CLOSING
+    # ==================================================
 
     def closeEvent(self, event):
 
@@ -994,7 +921,6 @@ class MainWindow(QMainWindow):
             self.worker is not None
             and self.worker.isRunning()
         ):
-
             QMessageBox.information(
                 self,
                 "Calculation in Progress",

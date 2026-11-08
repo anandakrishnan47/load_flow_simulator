@@ -8,3 +8,4 @@ pandas
 openpyxl
 reportlab
 pytest-qt
+pypdf
