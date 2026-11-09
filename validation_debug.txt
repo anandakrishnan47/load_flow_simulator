@@ -1,0 +1,36 @@
+Specified case not a valid file
+
+Specified case not a valid file
+
+Specified case not a valid file
+
+Specified case not a valid file
+
+============================================================================
+E4234 APSA - IEEE LOAD FLOW VALIDATION
+============================================================================
+
+Reference: PYPOWER Newton-Raphson
+Generator Q-limit enforcement: disabled
+
+IEEE 14: ERROR - RuntimeError: PYPOWER could not load C:\Users\victus\OneDrive\Desktop\load_flow_simulator\data\ieee\case14.m
+
+IEEE 30: ERROR - RuntimeError: PYPOWER could not load C:\Users\victus\OneDrive\Desktop\load_flow_simulator\data\ieee\case30.m
+
+IEEE 57: ERROR - RuntimeError: PYPOWER could not load C:\Users\victus\OneDrive\Desktop\load_flow_simulator\data\ieee\case57.m
+
+IEEE 118: ERROR - RuntimeError: PYPOWER could not load C:\Users\victus\OneDrive\Desktop\load_flow_simulator\data\ieee\case118.m
+
+============================================================================
+FINAL VALIDATION SUMMARY
+============================================================================
+Case           Result      Iterations     
+----------------------------------------------------------------------------
+IEEE 14        FAIL        N/A            
+IEEE 30        FAIL        N/A            
+IEEE 57        FAIL        N/A            
+IEEE 118       FAIL        N/A            
+
+============================================================================
+OVERALL VALIDATION: FAIL
+============================================================================

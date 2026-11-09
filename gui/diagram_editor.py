@@ -4,15 +4,17 @@
 from copy import deepcopy
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QGraphicsView,
     QInputDialog, QFileDialog,
     QMessageBox, QDialog, QFormLayout,
     QDialogButtonBox, QDoubleSpinBox,
-    QLabel,
+    QLabel, QListWidget, QSplitter,
 )
 
+from loadflow.models import Generator, Load
 from gui.diagram_scene import DiagramScene
 from gui.diagram_items import BusItem, BranchItem
 
@@ -23,6 +25,14 @@ class DiagramEditor(QWidget):
 
         self.scene = DiagramScene(network)
         self.build_ui()
+        self._shortcuts = []
+        for keys, action in (("Ctrl+Z", self.undo), ("Ctrl+Y", self.redo), ("Ctrl+Shift+Z", self.redo), ("Delete", self.delete_selected)):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(action)
+            self._shortcuts.append(shortcut)
+        self.scene.undo_stack.indexChanged.connect(self.update_undo_buttons)
+        self.update_undo_buttons()
 
     def build_ui(self):
         root = QVBoxLayout(self)
@@ -39,12 +49,21 @@ class DiagramEditor(QWidget):
             ("Load Layout", self.load_layout_dialog),
             ("Zoom +", self.zoom_in),
             ("Zoom -", self.zoom_out),
+            ("Fit", self.fit_view),
+            ("Undo", self.undo),
+            ("Redo", self.redo),
+            ("Save Project", self.save_project_dialog),
+            ("Open Project", self.open_project_dialog),
         ]
 
         for text, callback in actions:
             button = QPushButton(text)
             button.clicked.connect(callback)
             toolbar.addWidget(button)
+            if text == "Undo":
+                self.undo_button = button
+            elif text == "Redo":
+                self.redo_button = button
 
         root.addLayout(toolbar)
 
@@ -61,7 +80,21 @@ class DiagramEditor(QWidget):
             QGraphicsView.ViewportAnchor.AnchorUnderMouse
         )
 
-        root.addWidget(self.view)
+        container = QSplitter(Qt.Orientation.Horizontal)
+        palette = QWidget()
+        palette_layout = QVBoxLayout(palette)
+        palette_layout.addWidget(QLabel("Component palette"))
+        self.palette = QListWidget()
+        self.palette.addItems(["Bus", "Line", "Transformer", "Generator", "Load"])
+        self.palette.itemDoubleClicked.connect(lambda item: self.add_palette_component(item.text()))
+        palette_layout.addWidget(self.palette)
+        add_component = QPushButton("Add selected component")
+        add_component.clicked.connect(self.add_selected_palette_component)
+        palette_layout.addWidget(add_component)
+        container.addWidget(palette)
+        container.addWidget(self.view)
+        container.setSizes([170, 850])
+        root.addWidget(container)
 
         self.info_label = QLabel(
             "Drag buses to move them. "
@@ -242,7 +275,7 @@ class DiagramEditor(QWidget):
             self.show_error("Invalid bus parameters")
             return
 
-        positions = self.scene.positions()
+        before_network, positions = self.scene._snapshot()
 
         # Change the actual network bus, not only
         # the graphical item.
@@ -252,6 +285,7 @@ class DiagramEditor(QWidget):
         bus.vmax = vmax
 
         self.scene.rebuild(positions)
+        self.scene.record_external_edit(before_network, positions, "Edit bus")
 
     def edit_branch(self, item):
         branch = item.branch
@@ -295,7 +329,7 @@ class DiagramEditor(QWidget):
             )
             return
 
-        positions = self.scene.positions()
+        before_network, positions = self.scene._snapshot()
 
         branch.r = r
         branch.x = x
@@ -308,6 +342,7 @@ class DiagramEditor(QWidget):
             branch.b = values[3]
 
         self.scene.rebuild(positions)
+        self.scene.record_external_edit(before_network, positions, "Edit branch")
 
     def delete_selected(self):
         item = self.selected_component()
@@ -376,3 +411,97 @@ class DiagramEditor(QWidget):
     def get_network(self):
         """Return an independent copy of edited data."""
         return deepcopy(self.scene.network)
+
+    # Stage 3: additional editor operations.
+    def update_undo_buttons(self, *args):
+        self.undo_button.setEnabled(self.scene.can_undo())
+        self.redo_button.setEnabled(self.scene.can_redo())
+
+    def undo(self):
+        self.scene.undo()
+
+    def redo(self):
+        self.scene.redo()
+
+    def fit_view(self):
+        bounds = self.scene.itemsBoundingRect()
+        if not bounds.isEmpty():
+            self.view.fitInView(bounds.adjusted(-50, -50, 50, 50), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def add_selected_palette_component(self):
+        item = self.palette.currentItem()
+        if item is not None:
+            self.add_palette_component(item.text())
+
+    def add_palette_component(self, name):
+        actions = {
+            "Bus": self.add_bus_dialog,
+            "Line": self.add_line_dialog,
+            "Transformer": self.add_transformer_dialog,
+            "Generator": self.add_generator_dialog,
+            "Load": self.add_load_dialog,
+        }
+        actions[name]()
+
+    def _choose_bus(self, title):
+        options = [str(n) for n in sorted(self.scene.bus_items)]
+        if not options:
+            self.show_error("Add a bus first")
+            return None
+        selected, ok = QInputDialog.getItem(self, title, "Bus:", options, 0, False)
+        return int(selected) if ok else None
+
+    def add_generator_dialog(self):
+        bus = self._choose_bus("Generator bus")
+        if bus is None:
+            return
+        values = self.parameter_dialog("Generator", [
+            ("Pg (MW)", 50.0), ("Qg (MVAr)", 0.0),
+            ("Voltage setpoint (pu)", 1.0),
+            ("Qmin (MVAr)", -100.0), ("Qmax (MVAr)", 100.0),
+        ])
+        if values is None:
+            return
+        pg, qg, vg, qmin, qmax = values
+        if vg <= 0 or qmin > qmax:
+            self.show_error("Invalid generator settings")
+            return
+        try:
+            before_network, positions = self.scene._snapshot()
+            self.scene.network.add_generator(Generator(bus=bus, pg=pg, qg=qg, vg=vg, qmin=qmin, qmax=qmax))
+            self.scene.rebuild(positions)
+            self.scene.record_external_edit(before_network, positions, "Add generator")
+        except (ValueError, TypeError) as exc:
+            self.show_error(exc)
+
+    def add_load_dialog(self):
+        bus = self._choose_bus("Load bus")
+        if bus is None:
+            return
+        values = self.parameter_dialog("Load", [("Pd (MW)", 20.0), ("Qd (MVAr)", 10.0)])
+        if values is None:
+            return
+        try:
+            before_network, positions = self.scene._snapshot()
+            self.scene.network.add_load(Load(bus=bus, pd=values[0], qd=values[1]))
+            self.scene.rebuild(positions)
+            self.scene.record_external_edit(before_network, positions, "Add load")
+        except (ValueError, TypeError) as exc:
+            self.show_error(exc)
+
+    def save_project_dialog(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save APSA project", "apsa_project.json", "JSON files (*.json)")
+        if path:
+            try:
+                self.scene.save_project(path)
+            except (OSError, ValueError, TypeError) as exc:
+                self.show_error(exc)
+
+    def open_project_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open APSA project", "", "JSON files (*.json)")
+        if path:
+            try:
+                self.scene.load_project(path)
+                self.fit_view()
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                self.show_error(exc)

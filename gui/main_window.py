@@ -11,7 +11,7 @@ Module 11 - Results Visualization and Export
 import math
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QAction, QKeySequence
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -31,12 +31,14 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QHeaderView,
     QSplitter,
+    QDockWidget, QFileDialog, QToolBar,
 )
 
 from gui.controller import (
     NETWORKS,
     load_network,
     update_loads,
+    validate_network,
 )
 
 from gui.worker import LoadFlowWorker
@@ -85,6 +87,8 @@ class MainWindow(QMainWindow):
         self.network = None
         self.study = None
         self.worker = None
+        self.project_path = None
+        self._load_table_baseline = {}
 
         self.build_ui()
         self.load_selected_network()
@@ -341,6 +345,8 @@ class MainWindow(QMainWindow):
         self.export_panel = ExportPanel()
         root.addWidget(self.export_panel)
 
+        self.build_stage35_regions()
+
         # ----------------------------------------------
         # SIGNAL CONNECTIONS
         # ----------------------------------------------
@@ -448,9 +454,11 @@ class MainWindow(QMainWindow):
         self.populate_load_table()
         self.clear_results()
 
+        self.project_path = None
         self.status_label.setText(
             f"Loaded {name}: {len(network.buses)} buses"
         )
+        self.refresh_properties()
 
     # ==================================================
     # APPLY DIAGRAM CHANGES
@@ -470,9 +478,9 @@ class MainWindow(QMainWindow):
         self.diagram_editor.scene.clear_solution()
 
         self.status_label.setText(
-            "Diagram changes applied. "
-            "Review loads before solving."
+            "Diagram changes applied. Review loads before solving."
         )
+        self.refresh_properties()
 
     # ==================================================
     # POPULATE LOAD TABLE
@@ -486,6 +494,7 @@ class MainWindow(QMainWindow):
         ]
 
         self.load_table.setRowCount(len(buses))
+        self._load_table_baseline = {}
 
         for row, bus in enumerate(buses):
 
@@ -502,6 +511,8 @@ class MainWindow(QMainWindow):
                 if load.in_service
                 and load.bus == bus.number
             )
+
+            self._load_table_baseline[bus.number] = (pd, qd)
 
             self.load_table.setItem(
                 row, 0,
@@ -585,10 +596,23 @@ class MainWindow(QMainWindow):
         try:
             # Use the electrical network currently
             # held by the diagram editor.
-            edited = update_loads(
-                self.diagram_editor.get_network(),
-                self.read_load_table(),
-            )
+            values = self.read_load_table()
+            current = self.diagram_editor.get_network()
+            active = {b.number for b in current.buses if b.in_service}
+            if set(values) != active:
+                raise ValueError(
+                    "Diagram bus list changed. Click Apply Diagram Changes "
+                    "to refresh the load table before solving."
+                )
+            changed = {
+                number: value for number, value in values.items()
+                if not all(
+                    math.isclose(a, b, rel_tol=0, abs_tol=1e-6)
+                    for a, b in zip(value, self._load_table_baseline.get(number, (float('nan'), float('nan'))))
+                )
+            }
+            edited = update_loads(current, changed)
+            validate_network(edited)
 
         except Exception as exc:
             QMessageBox.warning(
@@ -597,6 +621,16 @@ class MainWindow(QMainWindow):
                 str(exc),
             )
             return
+
+        # Commit only changed loads to the diagram's electrical model.
+        if changed:
+            positions = self.diagram_editor.scene.positions()
+            self.diagram_editor.scene.set_network(edited)
+            for number, (x, y) in positions.items():
+                if number in self.diagram_editor.scene.bus_items:
+                    self.diagram_editor.scene.bus_items[number].setPos(x, y)
+            self.network = self.diagram_editor.get_network()
+            self.populate_load_table()
 
         self.study = None
         self.clear_results()
@@ -612,9 +646,8 @@ class MainWindow(QMainWindow):
         self.diagram_editor.setEnabled(False)
         self.sync_diagram_button.setEnabled(False)
 
-        self.status_label.setText(
-            "Solving load flow..."
-        )
+        self.status_label.setText("Solving load flow...")
+        self.log_message("Starting Newton-Raphson study")
 
         self.worker = LoadFlowWorker(
             edited,
@@ -660,6 +693,7 @@ class MainWindow(QMainWindow):
 
         solution = study.solution
 
+        self.log_message(f"Converged in {solution.iterations} iterations")
         self.status_label.setText(
             f"Converged in {solution.iterations} "
             f"iterations | "
@@ -675,9 +709,8 @@ class MainWindow(QMainWindow):
         self.study = None
         self.clear_results()
 
-        self.status_label.setText(
-            "Load flow failed"
-        )
+        self.status_label.setText("Load flow failed")
+        self.log_message(f"Study failed: {message}")
 
         QMessageBox.critical(
             self,
@@ -910,6 +943,189 @@ class MainWindow(QMainWindow):
         self.history_text.setPlainText(
             "\n".join(history)
         )
+
+    # ==================================================
+    # STAGE 3.5: SEVEN-REGION MAIN WINDOW
+    # ==================================================
+
+    def build_stage35_regions(self):
+        # Region 1: menu bar; region 2: toolbar.
+        menus = {name: self.menuBar().addMenu(name) for name in (
+            "File", "Edit", "View", "Network", "Study", "Results", "Help"
+        )}
+        toolbar = QToolBar("Main tools", self)
+        toolbar.setObjectName("mainTools")
+        self.addToolBar(toolbar)
+
+        def action(menu, title, callback, shortcut=None, on_toolbar=False):
+            item = QAction(title, self)
+            if shortcut:
+                item.setShortcut(QKeySequence(shortcut))
+            item.triggered.connect(callback)
+            menus[menu].addAction(item)
+            if on_toolbar:
+                toolbar.addAction(item)
+            return item
+
+        action("File", "Open Project...", self.open_project, "Ctrl+O", True)
+        action("File", "Save Project", self.save_project, "Ctrl+S", True)
+        action("File", "Save Project As...", self.save_project_as, "Ctrl+Shift+S")
+        action("File", "Load Benchmark", self.load_selected_network)
+        action("File", "Exit", self.close)
+        action("Edit", "Undo", self.diagram_editor.scene.undo, "Ctrl+Z", True)
+        action("Edit", "Redo", self.diagram_editor.scene.redo, "Ctrl+Y", True)
+        action("Edit", "Delete Selected", self.diagram_editor.delete_selected, "Delete")
+        action("View", "Zoom to Fit", self.diagram_editor.fit_view, "Ctrl+0", True)
+        action("View", "Zoom In", self.diagram_editor.zoom_in, "Ctrl++")
+        action("View", "Zoom Out", self.diagram_editor.zoom_out, "Ctrl+-")
+        action("Network", "Apply Diagram Changes", self.sync_diagram_to_network)
+        action("Network", "Check Network", self.check_network, on_toolbar=True)
+        action("Study", "Run Newton-Raphson", self.run_load_flow, "F5", True)
+        action("Results", "Bus Results", lambda: self.tabs.setCurrentWidget(self.bus_table))
+        action("Results", "Branch Flows", lambda: self.tabs.setCurrentWidget(self.branch_table))
+        action("Results", "Charts", lambda: self.tabs.setCurrentWidget(self.results_charts))
+        action("Help", "About", lambda: QMessageBox.information(
+            self, "APSA", "E4234 APSA Newton-Raphson Load Flow Simulator"
+        ))
+
+        # Region 3: component palette; region 4: diagram canvas (existing tab).
+        self.palette_dock = QDockWidget("Component Palette", self)
+        palette = QWidget()
+        palette_layout = QVBoxLayout(palette)
+        for title, callback in (
+            ("Add Bus", self.diagram_editor.add_bus_dialog),
+            ("Add Line", self.diagram_editor.add_line_dialog),
+            ("Add Transformer", self.diagram_editor.add_transformer_dialog),
+            ("Edit Selected", self.diagram_editor.edit_selected),
+            ("Delete Selected", self.diagram_editor.delete_selected),
+        ):
+            button = QPushButton(title)
+            button.clicked.connect(callback)
+            palette_layout.addWidget(button)
+        palette_layout.addStretch()
+        self.palette_dock.setWidget(palette)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.palette_dock)
+
+        # Region 5: selected-object properties.
+        self.properties_dock = QDockWidget("Properties", self)
+        self.properties_text = QPlainTextEdit()
+        self.properties_text.setReadOnly(True)
+        self.properties_dock.setWidget(self.properties_text)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
+
+        # Region 6: study configuration/results already in the central area.
+        # Region 7: event log and status bar.
+        self.log_dock = QDockWidget("Event Log", self)
+        self.event_log = QPlainTextEdit()
+        self.event_log.setReadOnly(True)
+        self.event_log.setMaximumBlockCount(1000)
+        self.log_dock.setWidget(self.event_log)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
+        self.statusBar().showMessage("Ready")
+        self.diagram_editor.scene.selectionChanged.connect(self.refresh_properties)
+        self.diagram_editor.scene.undo_stack.indexChanged.connect(
+            lambda _: self.invalidate_study()
+        )
+        self.refresh_properties()
+
+    def log_message(self, message):
+        self.event_log.appendPlainText(str(message))
+        self.statusBar().showMessage(str(message), 8000)
+
+    def invalidate_study(self):
+        if self.worker is not None or self.study is None:
+            return
+        self.clear_results()
+        self.diagram_editor.scene.clear_solution()
+        self.status_label.setText("Network changed: results cleared")
+
+    def refresh_properties(self):
+        selected = self.diagram_editor.scene.selectedItems()
+        item = next((obj for obj in selected if hasattr(obj, "bus") or hasattr(obj, "branch")), None)
+        if item is None:
+            self.properties_text.setPlainText("Select a bus or branch in the diagram.")
+            return
+        component = getattr(item, "bus", None)
+        if component is None:
+            component = getattr(item, "branch", None)
+        from dataclasses import asdict
+        self.properties_text.setPlainText(
+            "\n".join(f"{k}: {v}" for k, v in asdict(component).items())
+        )
+
+    def check_network(self):
+        try:
+            network = self.diagram_editor.get_network()
+            validate_network(network)
+        except Exception as exc:
+            self.log_message(f"Network check failed: {exc}")
+            QMessageBox.warning(self, "Network Check", str(exc))
+            return False
+        self.log_message("Network check passed")
+        return True
+
+    def save_project(self):
+        if self.worker is not None:
+            return
+        if not self.project_path:
+            return self.save_project_as()
+        try:
+            # Commit pending load table edits without altering unchanged ZIP loads.
+            values = self.read_load_table()
+            current = self.diagram_editor.get_network()
+            active = {b.number for b in current.buses if b.in_service}
+            if set(values) != active:
+                raise ValueError("Click Apply Diagram Changes to refresh the load table.")
+            changed = {n: v for n, v in values.items() if not all(
+                math.isclose(a, b, rel_tol=0, abs_tol=1e-6)
+                for a, b in zip(v, self._load_table_baseline.get(n, (float('nan'), float('nan'))))
+            )}
+            if changed:
+                positions = self.diagram_editor.scene.positions()
+                edited = update_loads(current, changed)
+                self.diagram_editor.scene.set_network(edited)
+                for number, pos in positions.items():
+                    if number in self.diagram_editor.scene.bus_items:
+                        self.diagram_editor.scene.bus_items[number].setPos(*pos)
+                self.network = self.diagram_editor.get_network()
+                self.populate_load_table()
+            self.diagram_editor.scene.save_project(self.project_path)
+            self.log_message(f"Saved project: {self.project_path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Project Error", str(exc))
+
+    def save_project_as(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save APSA Project", self.project_path or "apsa_project.json",
+            "APSA Project (*.json)"
+        )
+        if path:
+            old = self.project_path
+            self.project_path = path
+            self.save_project()
+            if not Path(path).is_file():
+                self.project_path = old
+
+    def open_project(self):
+        if self.worker is not None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open APSA Project", "", "APSA Project (*.json)"
+        )
+        if not path:
+            return
+        try:
+            network = self.diagram_editor.scene.load_project(path)
+            self.network = network
+            self.project_path = path
+            self.populate_load_table()
+            self.clear_results()
+            self.diagram_editor.scene.clear_solution()
+            self.diagram_editor.fit_view()
+            self.refresh_properties()
+            self.log_message(f"Opened project: {path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Open Project Error", str(exc))
 
     # ==================================================
     # SAFE WINDOW CLOSING
