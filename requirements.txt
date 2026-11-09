@@ -1,11 +1,11 @@
-python -m pip install -r requirements.txt
 numpy
 scipy
-PySide6
-matplotlib
-pytest
 pandas
+matplotlib
+PySide6
 openpyxl
 reportlab
-pytest-qt
 pypdf
+pypower
+pytest
+pytest-qt

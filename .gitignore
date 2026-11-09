@@ -7,3 +7,24 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Generated results
+/results/
+*.log
+
+# Local configuration
+.env
+
+# Operating system
+.DS_Store
+Thumbs.db

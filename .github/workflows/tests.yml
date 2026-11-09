@@ -1,0 +1,63 @@
+
+name: APSA Automated Tests
+
+on:
+  push:
+    branches:
+      - main
+      - "module-*"
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run APSA Tests
+    runs-on: ubuntu-latest
+
+    env:
+      QT_QPA_PLATFORM: offscreen
+      MPLBACKEND: Agg
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Qt Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 \
+            libopengl0 \
+            libxkbcommon-x11-0
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Check Dependencies
+        run: python -m pip check
+
+      - name: Run All Tests
+        run: python -m pytest tests/ -v
+
+      - name: Run Final Verification
+        run: python scripts/verify_project.py
+
+      - name: Upload Verification Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apsa-verification-report
+          path: results/verification/
+          if-no-files-found: ignore
