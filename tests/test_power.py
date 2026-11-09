@@ -190,17 +190,95 @@ def test_invalid_voltage():
     with pytest.raises(ValueError):
         calculate_power(ybus, vm, va)
 
+def test_zip_load_implemented():
+    """Verify that ZIP load calculations work."""
 
-def test_zip_not_implemented():
-    net = make_network()
-    net.loads[0].model = "ZIP"
+    import numpy as np
+    import pytest
 
-    _, mapping = build_ybus(net)
+    from loadflow.models import Network, Bus, Load
+    from loadflow.power import (
+        specified_power,
+        calculate_load_power,
+    )
 
-    with pytest.raises(NotImplementedError):
-        specified_power(net, mapping)
+    network = Network(base_mva=100.0)
 
+    network.buses.append(
+        Bus(
+            number=1,
+            name="Load Bus",
+            base_kv=230.0,
+            bus_type="PQ",
+        )
+    )
 
+    network.loads.append(
+        Load(
+            bus=1,
+            pd=100.0,
+            qd=50.0,
+            model="ZIP",
+            zip_p=(0.3, 0.2, 0.5),
+            zip_q=(0.2, 0.3, 0.5),
+        )
+    )
+
+    bus_index = {1: 0}
+    vm = np.array([0.95])
+
+    p_spec, q_spec = specified_power(
+        network,
+        bus_index,
+        vm=vm,
+    )
+
+    p_load, q_load, dp, dq = (
+        calculate_load_power(
+            network,
+            bus_index,
+            vm,
+        )
+    )
+
+    expected_p = (
+        1.0 * (
+            0.3 * 0.95**2
+            + 0.2 * 0.95
+            + 0.5
+        )
+    )
+
+    expected_q = (
+        0.5 * (
+            0.2 * 0.95**2
+            + 0.3 * 0.95
+            + 0.5
+        )
+    )
+
+    expected_dp = (
+        1.0 * (
+            2 * 0.3 * 0.95
+            + 0.2
+        )
+    )
+
+    expected_dq = (
+        0.5 * (
+            2 * 0.2 * 0.95
+            + 0.3
+        )
+    )
+
+    assert p_load[0] == pytest.approx(expected_p)
+    assert q_load[0] == pytest.approx(expected_q)
+
+    assert dp[0] == pytest.approx(expected_dp)
+    assert dq[0] == pytest.approx(expected_dq)
+
+    assert p_spec[0] == pytest.approx(-expected_p)
+    assert q_spec[0] == pytest.approx(-expected_q)
 def test_voltage_angle_dimensions():
     net = make_network()
     ybus, _ = build_ybus(net)
