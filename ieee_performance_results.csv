@@ -1,0 +1,5 @@
+case,buses,branches,nr_iterations,median_total_ms,median_ms_per_iteration,mean_total_ms,min_total_ms,max_total_ms,repetitions
+IEEE 14,14,20,2,5.87625,2.938125,5.935915,5.6956,6.5341,20
+IEEE 30,30,41,3,15.86855,5.289517,16.529845,13.8734,23.5218,20
+IEEE 57,57,80,3,25.42255,8.474183,25.853675,24.5127,30.1459,20
+IEEE 118,118,186,3,55.06865,18.356217,55.31104,54.3635,56.4515,20

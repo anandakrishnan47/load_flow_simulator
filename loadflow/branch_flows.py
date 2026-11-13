@@ -1,4 +1,3 @@
-
 """
 Module 7: Branch power flows and network losses.
 

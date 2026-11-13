@@ -1,4 +1,4 @@
-"""Graphics for buses, lines, transformers, generators and loads."""
+"""Selectable graphics for APSA buses, branches, generators and loads."""
 from PySide6.QtCore import Qt, QPointF, QRectF
 from PySide6.QtGui import QColor, QPen, QBrush, QFont, QPainter, QPolygonF
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsLineItem, QGraphicsTextItem
@@ -7,24 +7,26 @@ from PySide6.QtWidgets import QGraphicsItem, QGraphicsLineItem, QGraphicsTextIte
 class EquipmentSymbol(QGraphicsItem):
     def __init__(self, kind, component, parent=None):
         super().__init__(parent)
-        self.kind, self.component = kind, component
+        self.kind = kind
+        self.component = component
         self.setZValue(3)
-        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        self.setToolTip(f'{kind} at bus {component.bus}')
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        self.setToolTip(f'{kind} at bus {component.bus} — select and use Edit Selected')
+        self.setOpacity(1.0 if component.in_service else 0.45)
 
     def boundingRect(self):
-        return QRectF(-18, -18, 36, 36)
+        return QRectF(-19, -19, 38, 38)
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        outline = QColor('#f59e0b') if self.isSelected() else QColor('#059669' if self.kind == 'Generator' else '#ea580c')
+        painter.setPen(QPen(outline, 3 if self.isSelected() else 2))
+        painter.setBrush(QBrush(QColor('#ecfdf5' if self.kind == 'Generator' else '#fff7ed')))
         if self.kind == 'Generator':
-            painter.setPen(QPen(QColor('#059669'), 2))
-            painter.setBrush(QBrush(QColor('#ecfdf5')))
             painter.drawEllipse(QRectF(-14, -14, 28, 28))
             painter.drawText(QRectF(-14, -14, 28, 28), Qt.AlignmentFlag.AlignCenter, 'G')
         else:
-            painter.setPen(QPen(QColor('#ea580c'), 2))
-            painter.setBrush(QBrush(QColor('#fff7ed')))
             painter.drawPolygon(QPolygonF([QPointF(0, 14), QPointF(-13, -11), QPointF(13, -11)]))
 
 
@@ -46,8 +48,7 @@ class BusItem(QGraphicsLineItem):
         self.clear_voltage()
 
     def _pen(self):
-        selected = self.isSelected()
-        self.setPen(QPen(QColor('#f59e0b') if selected else self._color, 8 if selected else 6))
+        self.setPen(QPen(QColor('#f59e0b') if self.isSelected() else self._color, 8 if self.isSelected() else 6))
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
@@ -76,8 +77,8 @@ class BusItem(QGraphicsLineItem):
             if symbol.scene() is not None:
                 symbol.scene().removeItem(symbol)
         self.equipment_symbols.clear()
-        components = [('Generator', g) for g in (generators or []) if g.in_service]
-        components += [('Load', l) for l in (loads or []) if l.in_service]
+        components = [('Generator', g) for g in (generators or [])]
+        components += [('Load', l) for l in (loads or [])]
         for i, (kind, component) in enumerate(components):
             symbol = EquipmentSymbol(kind, component, self)
             symbol.setPos((i - (len(components) - 1) / 2) * 43, 55)

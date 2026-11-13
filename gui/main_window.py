@@ -9,6 +9,11 @@ Module 11 - Results Visualization and Export
 """
 
 import math
+from pathlib import Path
+
+import shiboken6
+
+from loadflow.models import Network
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QAction, QKeySequence
@@ -31,7 +36,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QHeaderView,
     QSplitter,
-    QDockWidget, QFileDialog, QToolBar,
+    QDockWidget, QFileDialog, QToolBar, QFormLayout,
 )
 
 from gui.controller import (
@@ -43,6 +48,7 @@ from gui.controller import (
 
 from gui.worker import LoadFlowWorker
 from gui.diagram_editor import DiagramEditor
+from gui.diagram_items import EquipmentSymbol, BusItem, BranchItem
 
 # Module 11
 from gui.results_charts import ResultsCharts
@@ -89,6 +95,7 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.project_path = None
         self._load_table_baseline = {}
+        self._closing = False
 
         self.build_ui()
         self.load_selected_network()
@@ -455,6 +462,7 @@ class MainWindow(QMainWindow):
         self.clear_results()
 
         self.project_path = None
+        self.setWindowTitle("APSA | Newton-Raphson Load Flow Simulator")
         self.status_label.setText(
             f"Loaded {name}: {len(network.buses)} buses"
         )
@@ -967,6 +975,7 @@ class MainWindow(QMainWindow):
                 toolbar.addAction(item)
             return item
 
+        action("File", "New Project", self.new_project, "Ctrl+N", True)
         action("File", "Open Project...", self.open_project, "Ctrl+O", True)
         action("File", "Save Project", self.save_project, "Ctrl+S", True)
         action("File", "Save Project As...", self.save_project_as, "Ctrl+Shift+S")
@@ -996,6 +1005,9 @@ class MainWindow(QMainWindow):
             ("Add Bus", self.diagram_editor.add_bus_dialog),
             ("Add Line", self.diagram_editor.add_line_dialog),
             ("Add Transformer", self.diagram_editor.add_transformer_dialog),
+            ("Connect Transformer (click buses)", lambda: self.diagram_editor.start_connection("Transformer")),
+            ("Add Generator", self.diagram_editor.add_generator_dialog),
+            ("Add Load", self.diagram_editor.add_load_dialog),
             ("Edit Selected", self.diagram_editor.edit_selected),
             ("Delete Selected", self.diagram_editor.delete_selected),
         ):
@@ -1010,7 +1022,13 @@ class MainWindow(QMainWindow):
         self.properties_dock = QDockWidget("Properties", self)
         self.properties_text = QPlainTextEdit()
         self.properties_text.setReadOnly(True)
-        self.properties_dock.setWidget(self.properties_text)
+        properties_container = QWidget()
+        properties_layout = QVBoxLayout(properties_container)
+        properties_layout.addWidget(self.properties_text)
+        self.properties_edit_button = QPushButton('Edit Selected Properties...')
+        self.properties_edit_button.clicked.connect(self.diagram_editor.edit_selected)
+        properties_layout.addWidget(self.properties_edit_button)
+        self.properties_dock.setWidget(properties_container)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
 
         # Region 6: study configuration/results already in the central area.
@@ -1023,35 +1041,186 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
         self.statusBar().showMessage("Ready")
         self.diagram_editor.scene.selectionChanged.connect(self.refresh_properties)
+        self.diagram_editor.scene.undo_stack.indexChanged.connect(self.on_diagram_edit)
         self.diagram_editor.scene.undo_stack.indexChanged.connect(
-            lambda _: self.invalidate_study()
+            self.invalidate_study
         )
         self.refresh_properties()
+
+    def _live_scene(self):
+        """Return the scene only while its underlying Qt objects are alive.
+
+        During pytest-qt teardown a Python wrapper can outlive its C++ object.
+        A Python reference alone is therefore not sufficient.
+        """
+        if getattr(self, "_closing", False):
+            return None
+        try:
+            if not shiboken6.isValid(self):
+                return None
+            editor = getattr(self, "diagram_editor", None)
+            if editor is None or not shiboken6.isValid(editor):
+                return None
+            scene = getattr(editor, "scene", None)
+            if scene is None or not shiboken6.isValid(scene):
+                return None
+            return scene
+        except (RuntimeError, ReferenceError):
+            return None
+
+    def on_diagram_edit(self, *args):
+        """Keep the load table aligned with structural diagram edits.
+
+        Never discard user-entered pending load values silently.
+        """
+        if self._live_scene() is None or self.worker is not None:
+            return
+        try:
+            values = self.read_load_table()
+            dirty = any(
+                not all(math.isclose(a, b, rel_tol=0, abs_tol=1e-6)
+                        for a, b in zip(pair, self._load_table_baseline.get(number, (float('nan'), float('nan')))))
+                for number, pair in values.items()
+            )
+        except (ValueError, AttributeError, TypeError):
+            dirty = True
+        if not dirty:
+            self.network = self.diagram_editor.get_network()
+            self.populate_load_table()
+        else:
+            self.status_label.setText('Pending load table edits: apply them before refreshing diagram data')
+        self.refresh_properties()
+
+    # ==================================================
+    # STAGE 3.7: BLANK PROJECT WORKSPACE
+    # ==================================================
+
+    def _has_unsaved_changes(self):
+        """Check structural undo history and uncommitted table values."""
+        try:
+            stack = self.diagram_editor.scene.undo_stack
+            if not stack.isClean():
+                return True
+        except RuntimeError:
+            return True
+
+        try:
+            current = self.read_load_table()
+            if set(current) != set(self._load_table_baseline):
+                return True
+            for number, pair in current.items():
+                original = self._load_table_baseline[number]
+                if any(
+                    not math.isclose(a, b, rel_tol=0.0, abs_tol=1e-6)
+                    for a, b in zip(pair, original)
+                ):
+                    return True
+        except (ValueError, TypeError, AttributeError, KeyError):
+            return True
+        return False
+
+    def _confirm_discard_changes(self):
+        """Ask before replacing a modified network."""
+        if not self._has_unsaved_changes():
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            "The current network has unsaved changes.\n"
+            "Discard them and create a new blank project?",
+            QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Discard
+
+    def new_project(self):
+        """Create an empty editable network, without an IEEE example."""
+        if self.worker is not None:
+            QMessageBox.information(
+                self,
+                "Calculation in Progress",
+                "Wait for the current load-flow calculation to finish.",
+            )
+            return
+
+        if not self._confirm_discard_changes():
+            return
+
+        # Network() contains no buses, branches, generators or loads.
+        # It is intentionally invalid for power flow until a slack bus
+        # and the necessary network components have been created.
+        network = Network(base_mva=100.0)
+        self.diagram_editor.set_network(network)
+        self.network = self.diagram_editor.get_network()
+        self.project_path = None
+        self.study = None
+        self.populate_load_table()
+        self.clear_results()
+        self.diagram_editor.scene.clear_solution()
+        self.diagram_editor.fit_view()
+        self.refresh_properties()
+
+        # The blank project is a clean initial state.
+        self.diagram_editor.scene.undo_stack.setClean()
+        self.setWindowTitle(
+            "APSA | Untitled Project - Newton-Raphson Load Flow Simulator"
+        )
+        self.status_label.setText(
+            "New blank project. Add a Slack bus to begin."
+        )
+        self.log_message(
+            "Created new blank project (100 MVA base). "
+            "Add a Slack bus, then connect other buses and equipment."
+        )
+        # Show the editor immediately, even if another results tab was active.
+        self.tabs.setCurrentWidget(self.diagram_editor)
 
     def log_message(self, message):
         self.event_log.appendPlainText(str(message))
         self.statusBar().showMessage(str(message), 8000)
 
-    def invalidate_study(self):
-        if self.worker is not None or self.study is None:
+    def invalidate_study(self, *args):
+        scene = self._live_scene()
+        if scene is None or self.worker is not None or self.study is None:
             return
         self.clear_results()
-        self.diagram_editor.scene.clear_solution()
+        try:
+            if shiboken6.isValid(scene):
+                scene.clear_solution()
+        except (RuntimeError, ReferenceError):
+            return
         self.status_label.setText("Network changed: results cleared")
 
-    def refresh_properties(self):
-        selected = self.diagram_editor.scene.selectedItems()
-        item = next((obj for obj in selected if hasattr(obj, "bus") or hasattr(obj, "branch")), None)
-        if item is None:
-            self.properties_text.setPlainText("Select a bus or branch in the diagram.")
+    def refresh_properties(self, *args):
+        """Safely refresh selected component details, including during Qt teardown."""
+        scene = self._live_scene()
+        if scene is None:
             return
-        component = getattr(item, "bus", None)
-        if component is None:
-            component = getattr(item, "branch", None)
-        from dataclasses import asdict
-        self.properties_text.setPlainText(
-            "\n".join(f"{k}: {v}" for k, v in asdict(component).items())
-        )
+        try:
+            panel = getattr(self, "properties_text", None)
+            if panel is None or not shiboken6.isValid(panel):
+                return
+            selected = scene.selectedItems()
+            item = next(
+                (obj for obj in selected if isinstance(obj, (EquipmentSymbol, BusItem, BranchItem))),
+                None,
+            )
+            if item is None:
+                panel.setPlainText("Select a bus, line, transformer, generator or load in the diagram.")
+                return
+            component = getattr(item, "component", None)
+            if component is None:
+                component = getattr(item, "bus", None)
+            if component is None:
+                component = getattr(item, "branch", None)
+            from dataclasses import asdict
+            panel.setPlainText(
+                "\n".join(f"{key}: {value}" for key, value in asdict(component).items())
+            )
+        except (RuntimeError, ReferenceError):
+            # The scene or its widgets may be destroyed by Qt during teardown.
+            return
 
     def check_network(self):
         try:
@@ -1090,6 +1259,8 @@ class MainWindow(QMainWindow):
                 self.network = self.diagram_editor.get_network()
                 self.populate_load_table()
             self.diagram_editor.scene.save_project(self.project_path)
+            self.diagram_editor.scene.undo_stack.setClean()
+            self.setWindowTitle(f"APSA | {Path(self.project_path).name}")
             self.log_message(f"Saved project: {self.project_path}")
         except Exception as exc:
             QMessageBox.critical(self, "Save Project Error", str(exc))
@@ -1118,6 +1289,7 @@ class MainWindow(QMainWindow):
             network = self.diagram_editor.scene.load_project(path)
             self.network = network
             self.project_path = path
+            self.setWindowTitle(f"APSA | {Path(path).name}")
             self.populate_load_table()
             self.clear_results()
             self.diagram_editor.scene.clear_solution()
@@ -1147,4 +1319,32 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
 
+        self._closing = True
+        scene = self._live_scene_for_disconnect()
+        if scene is not None:
+            try:
+                scene.selectionChanged.disconnect(self.refresh_properties)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                stack = scene.undo_stack
+                if shiboken6.isValid(stack):
+                    for callback in (self.on_diagram_edit, self.invalidate_study):
+                        try:
+                            stack.indexChanged.disconnect(callback)
+                        except (RuntimeError, TypeError):
+                            pass
+            except (RuntimeError, ReferenceError):
+                pass
         super().closeEvent(event)
+
+    def _live_scene_for_disconnect(self):
+        """Access scene during close without the _closing restriction."""
+        try:
+            editor = getattr(self, "diagram_editor", None)
+            if editor is None or not shiboken6.isValid(editor):
+                return None
+            scene = getattr(editor, "scene", None)
+            return scene if scene is not None and shiboken6.isValid(scene) else None
+        except (RuntimeError, ReferenceError):
+            return None

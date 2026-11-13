@@ -9,7 +9,7 @@ from PySide6.QtCore import QPointF
 from PySide6.QtGui import QUndoCommand, QUndoStack
 from PySide6.QtWidgets import QGraphicsScene
 from loadflow.models import Bus, Line, Transformer, Generator, Load, Shunt, ExternalGrid, Network
-from gui.diagram_items import BusItem, BranchItem
+from gui.diagram_items import BusItem, BranchItem, EquipmentSymbol
 
 COMPONENTS = {
     'buses': (Bus, 'add_bus'),
@@ -146,6 +146,114 @@ class DiagramScene(QGraphicsScene):
         self.rebuild(new_positions)
         self._push_snapshot(before_network, before_positions, f'Add bus {number}')
         return bus
+
+    def add_generator(self, bus, pg=50.0, qg=0.0, vg=1.0, qmin=-100.0, qmax=100.0):
+        """Add a generator to an existing active bus; supports undo/redo."""
+        bus = int(bus)
+        if bus not in self.bus_items:
+            raise ValueError(f'Bus {bus} is not active')
+        if not all(math.isfinite(float(v)) for v in (pg, qg, vg, qmin, qmax)):
+            raise ValueError('Generator parameters must be finite')
+        if vg <= 0 or qmin > qmax:
+            raise ValueError('Invalid generator voltage or Q limits')
+        before_network, before_positions = self._snapshot()
+        component = Generator(bus=bus, pg=float(pg), qg=float(qg), vg=float(vg),
+                              qmin=float(qmin), qmax=float(qmax))
+        self.network.add_generator(component)
+        self.rebuild(before_positions)
+        self._push_snapshot(before_network, before_positions, 'Add generator')
+        return component
+
+    def add_load(self, bus, pd=20.0, qd=10.0):
+        """Add a constant-power load; supports undo/redo."""
+        bus = int(bus)
+        if bus not in self.bus_items:
+            raise ValueError(f'Bus {bus} is not active')
+        if not all(math.isfinite(float(v)) for v in (pd, qd)):
+            raise ValueError('Load parameters must be finite')
+        before_network, before_positions = self._snapshot()
+        component = Load(bus=bus, pd=float(pd), qd=float(qd))
+        self.network.add_load(component)
+        self.rebuild(before_positions)
+        self._push_snapshot(before_network, before_positions, 'Add load')
+        return component
+
+    def change_bus_type(self, number, bus_type):
+        """Undoable bus-type change, enforcing at most one active Slack bus."""
+        if bus_type not in ('Slack', 'PV', 'PQ'):
+            raise ValueError('Bus type must be Slack, PV or PQ')
+        bus = next((b for b in self.network.buses if b.number == int(number)), None)
+        if bus is None:
+            raise ValueError('Bus does not exist')
+        if bus_type == 'Slack' and any(
+            b.number != bus.number and b.bus_type == 'Slack' and b.in_service
+            for b in self.network.buses
+        ):
+            raise ValueError('Another active Slack bus already exists. Change it to PV/PQ first.')
+        before_network, positions = self._snapshot()
+        bus.bus_type = bus_type
+        self.rebuild(positions)
+        self.record_external_edit(before_network, positions, 'Change bus type')
+
+    def edit_component(self, component, changes, description='Edit equipment'):
+        """Update a live network component and preserve full undo/redo history."""
+        found = any(component is item for name in COMPONENTS for item in getattr(self.network, name))
+        if not found:
+            raise ValueError('Component is no longer part of the network')
+        for key, value in changes.items():
+            if not hasattr(component, key):
+                raise ValueError(f'Unknown component property: {key}')
+            if isinstance(value, (int, float)) and not math.isfinite(float(value)):
+                raise ValueError(f'{key} must be finite')
+        prospective = {key: getattr(component, key) for key in changes}
+        prospective.update(changes)
+        if isinstance(component, Generator):
+            if prospective.get('vg', component.vg) <= 0:
+                raise ValueError('Generator voltage setpoint must be positive')
+            if prospective.get('qmin', component.qmin) > prospective.get('qmax', component.qmax):
+                raise ValueError('Qmin cannot exceed Qmax')
+        if isinstance(component, Load):
+            pass  # Signed loads are supported by the network model.
+        if isinstance(component, (Line, Transformer)):
+            r = prospective.get('r', component.r)
+            x = prospective.get('x', component.x)
+            if r == 0 and x == 0:
+                raise ValueError('Branch impedance cannot be zero')
+            if prospective.get('rating_mva', component.rating_mva) <= 0:
+                raise ValueError('Branch rating must be positive')
+            if isinstance(component, Transformer) and prospective.get('tap_ratio', component.tap_ratio) <= 0:
+                raise ValueError('Transformer tap ratio must be positive')
+        if isinstance(component, Bus):
+            if prospective.get('base_kv', component.base_kv) <= 0 or prospective.get('vm', component.vm) <= 0:
+                raise ValueError('Bus voltage parameters must be positive')
+            if prospective.get('vmin', component.vmin) <= 0 or prospective.get('vmin', component.vmin) >= prospective.get('vmax', component.vmax):
+                raise ValueError('Invalid bus voltage limits')
+            if 'bus_type' in changes:
+                new_type = changes['bus_type']
+                if new_type not in ('Slack', 'PV', 'PQ'):
+                    raise ValueError('Invalid bus type')
+                if new_type == 'Slack' and any(
+                    b is not component and b.in_service and b.bus_type == 'Slack'
+                    for b in self.network.buses
+                ):
+                    raise ValueError('Another active Slack bus already exists')
+        before_network, positions = self._snapshot()
+        for key, value in changes.items():
+            setattr(component, key, value)
+        self.rebuild(positions)
+        self.record_external_edit(before_network, positions, description)
+
+    def remove_equipment(self, component):
+        for name in ('generators', 'loads'):
+            collection = getattr(self.network, name)
+            for index, candidate in enumerate(collection):
+                if candidate is component:
+                    before_network, positions = self._snapshot()
+                    del collection[index]
+                    self.rebuild(positions)
+                    self.record_external_edit(before_network, positions, 'Remove equipment')
+                    return
+        raise ValueError('Equipment not found')
 
     def remove_bus(self, number):
         number = int(number)

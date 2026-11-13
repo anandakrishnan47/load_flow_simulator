@@ -105,9 +105,7 @@ def extract_results(study):
             "P To (MW)": float(branch.p_to),
             "Q To (MVAr)": float(branch.q_to),
             "P Loss (MW)": float(branch.p_loss),
-            "Loading (%)": _finite(
-                branch.loading_percent
-            ),
+            "Loading (%)": float(branch.loading_percent),
         })
 
     history_rows = [
@@ -130,7 +128,7 @@ def extract_results(study):
         {"Metric": "Net Branch Reactive Absorption (MVAr)",
          "Value": float(flows.total_q_net)},
         {"Metric": "Maximum Branch Loading (%)",
-         "Value": _finite(flows.max_loading_percent)},
+         "Value": float(flows.max_loading_percent)},
         {"Metric": "P Balance Residual (MW)",
          "Value": float(flows.bus_p_balance_error)},
         {"Metric": "Q Balance Residual (MVAr)",
